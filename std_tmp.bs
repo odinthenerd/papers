@@ -1,0 +1,114 @@
+<pre class='metadata'>
+Title: std::expected
+Shortname: ????
+Revision: 0
+Audience: SG7
+Status: D
+Group: WG21
+URL: https://wg21.link/
+!Source: <a href="https://github.com/odinthenerd/papers/blob/master/source/std_tmp.bs">github.com/odinthenerd/papers/blob/master/source/std_tmp.bs</a>
+Editor: Odin Holmes, Auto-Intern GmbH, holmes@auto-intern.de
+Abstract: Adding tacit type-based metaprogramming to the standard library as a stopgap
+Date: 2018-06-11
+Markup Shorthands: markdown yes
+</pre>
+
+Elevator pitch:
+====
+Any type based metaprogramming library in the standard should at least provide:
+1. arbitrarily complex composability
+2. a choice between hard error or SFINAE 
+3. conversion between a SFINAE failure and an error monad in both directions
+4. short-circuiting of conditional branches by default 
+5. similar performance to handwritten metaprograms
+6. an unspecified backend allowing future work by SG7 to provide a (compilation) performance increase in the future
+7. unification of the triple interface which libraries are expected to provide today (fun, fun_t, and fun_v)
+
+Basic concepts:
+====
+This library builds exclusively on the concept of a 'metaclosure'. A 'metaclosure', like a runtime closure is a callable object which can carry bound or fixed parameters and can be called with a second set of parameters.
+
+example:
+
+```push_back_<bool>  // metaclosure with bool as its fixed argument```
+
+The calling interface to a 'metaclosure' is left intentionally undefined (leaving room for optimization) but can be invoked using the `call_<>` alias. `call_<>` takes one 'metaclosure' and a variadic pack of parameters.
+
+```c++
+call_<push_back_<bool>, int> // resolved to list_<int,bool>
+call_<push_back_<bool>, int, char> // resolves to list_<int,char,bool>
+```
+
+It is not possible for the user to write a metaclosure, disallowing this is key to providing different backends as compilers improve especially with regard to constexpr metaprogramming. You can, however, lift an eager metafunction to a metafunction object.
+```c++
+call_<lift_<my_meta_function>, int>; //resolves to my_meta_function<int> 
+                                     //(which may resolve further)
+```
+Metaclosures compose together in a tacit continuation style (kind of like `std::range`). Every metaclosure supports a continuation as its last parameter. Except for variadic composing metaclosures (of which there are few) the continuation (last parameter) is defaulted to `identity_` or `listify_` depending on the expected arity passed to it. Reaching an `identity_` will end the chain returning the value passed to it. `listify_` is actually just an alias to `lift_<list_,identity_>`. In other words, our `push_back_<bool>` is actually a
+```c++
+push_back_<bool, listify_<identity_>>
+```
+so if we want a tuple out rather than a list we can just
+```c++
+call_<push_back_<bool,lift_<tuple>>,int,char> // resolves to std::tuple<int,char,bool>
+```
+we can arbitrarily chain them infinitely
+```c++
+call_<
+    push_back_<bool, 
+        push_back_<long, 
+            push_back_<float, 
+                lift_<tuple>>>>,
+    int,char> //resolves to tuple<int,char,bool,long,float>
+```
+those familliar with other tacit styles of notation like std::range or haskell point-free may feel at home, for others a step by step:
+```c++
+push_back_<bool, /*...*> //gets passed a pack of:
+
+// int, char
+
+// adds a bool to the back making it:
+
+// int, char, bool
+
+// which is passed to 
+push_back_<long, /*...*> // which adds a long to the end making it:
+
+// int, char, bool, long
+
+// which is passed to 
+push_back_<float, /*...*> // which adds a long to the end making it:
+
+// int, char, bool, long, float
+
+// which is passed to 
+lift_<tuple, identity_>  // which passes the pack to tuple<> making it:
+
+tuple<int, char, bool, long, float>
+```
+
+which is passed to `identity_` which returns `tuple<int, char, bool, long, float>` and breaks the chain
+
+Although taking packs is the preferred interface one can take lists of any kind using the `unpack_<>` metafunction object
+```c++
+call_<unpack_<pop_front_<lift_<pair>>>, tuple<int,char,bool>> //results in pair<char,bool>
+```
+
+
+Solving the problem of short-circuiting:
+====
+
+This style really shines when dealing with conditionals
+```c++
+using f1 = if_<is_<void>, lift_<fun1>, lift_<fun2>>;
+```
+here `if_<>` takes a predicate and two continuations. only one of the two continuations is passed the input parameter pack, depending on whether the predicate holds. This means that `if_<>` is automatically short-circuiting with no effort from the user and no requirement of lazy metafunctions (and ugly ::type::type). To me a short-circuiting `if` is simple and expected and we should not view it as complex just because it was hard to implement pre C++11.
+```c++
+call_<f1, int> // result is fun1<int>, fun2 guaranteed never evaluated
+
+call_<f1, void> //result is fun2<void>, fun1 is guaranteed never evaluated
+```
+It should also be noted how simply I was able to break up the composition by aliasing the metaclosure with `f1`. This allows the user to write more expressive code.
+
+
+
